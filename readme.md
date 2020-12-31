@@ -1,1 +1,1 @@
-pip install opencv-python opencv-python-headless
+Python implementation for Seam Carving.
