@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 from scipy import ndimage
 import skimage.measure
+from typing import List
 
 
 class SeamCarvingImage:
@@ -34,6 +35,11 @@ class SeamCarvingImage:
         self.remove_mask = None
         self.all_seams_expand_result = None
 
+        self.seam_order_cost = np.zeros((self.input_height, self.input_width), dtype=np.float)
+        self.seam_order_back_trace = np.zeros((self.input_height, self.input_width), dtype=np.int)
+        self.last_seam_cost = None
+        self.images_cache = None
+
     def reset(self):
         self.result_image = np.array(self.input_image)
         self.input_image_with_seam = np.array(self.input_image)
@@ -45,6 +51,7 @@ class SeamCarvingImage:
         self.remove_mask = None
 
     def energy_e1(self, image):
+        """L-1 norm gradient"""
         grad_x = ndimage.convolve1d(image, np.array([1, 0, -1]), axis=1, mode='wrap')
         grad_y = ndimage.convolve1d(image, np.array([1, 0, -1]), axis=0, mode='wrap')
 
@@ -58,6 +65,7 @@ class SeamCarvingImage:
         return gradient_map
 
     def energy_e2(self, image):
+        """L-2 norm gradient"""
         grad_x = ndimage.convolve1d(image, np.array([1, 0, -1]), axis=1, mode='wrap')
         grad_y = ndimage.convolve1d(image, np.array([1, 0, -1]), axis=0, mode='wrap')
 
@@ -68,7 +76,6 @@ class SeamCarvingImage:
         return gradient_map
 
     def energy_forward(self, image):
-
         h, w = image.shape[:2]
         image = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float64)
 
@@ -99,6 +106,7 @@ class SeamCarvingImage:
         return gradient_map
 
     def energy_entropy(self, image):
+        """using image entropy as energy map"""
         gradient_map = self.energy_e1(image)
         height, width, _ = image.shape
         for j in range(height):
@@ -115,45 +123,12 @@ class SeamCarvingImage:
         return gradient_map
 
     def make_heatmap(self, image):
-        image = image / image.max()
+        max = image.max()
+        if max != 0:
+            image = image / max
         image = (image * 255).astype(np.uint8)
         heatmap_img = cv2.applyColorMap(image, cv2.COLORMAP_JET)
         return heatmap_img
-
-    # def find_min_energy_seam_horizontal(self, image_energy, protect_mask=None, remove_mask=None):
-    #     height, width = image_energy.shape
-    #     image_energy = np.array(image_energy)  # make a copy
-    #     traceback = np.zeros_like(image_energy, dtype=np.int)
-    #
-    #     if protect_mask is not None:
-    #         image_energy[protect_mask] = 1000000
-    #
-    #     if remove_mask is not None:
-    #         image_energy[remove_mask] = -1000000
-    #
-    #     for x in range(1, width):
-    #         for y in range(0, height):
-    #             if y == 0:
-    #                 idx = np.argmin(image_energy[y:y + 2, x - 1])
-    #                 traceback[y, x] = idx + y
-    #                 min_energy = image_energy[idx + y, x - 1]
-    #             else:
-    #                 idx = np.argmin(image_energy[y - 1:y + 2, x - 1])
-    #                 traceback[y, x] = idx + y - 1
-    #                 min_energy = image_energy[idx + y - 1, x - 1]
-    #             image_energy[y, x] += min_energy
-    #
-    #     # backtrack to find path
-    #     seam_idx = []
-    #     seam_mask = np.ones((height, width), dtype=np.bool)
-    #     i = np.argmin(image_energy[:, -1])  # last column
-    #     for j in range(width - 1, -1, -1):
-    #         seam_mask[i, j] = False
-    #         seam_idx.append(i)
-    #         i = traceback[i, j]
-    #
-    #     seam_idx.reverse()
-    #     return np.array(seam_idx), seam_mask
 
     def find_min_energy_seam_vertical(self, image_energy, protect_mask=None, remove_mask=None):
         height, width = image_energy.shape
@@ -182,7 +157,9 @@ class SeamCarvingImage:
         # backtrack to find path
         seam_idx = []
         seam_mask = np.ones((height, width), dtype=np.bool)
-        j = np.argmin(image_energy[-1])  # last row
+        j = np.argmin(image_energy[-1])
+        self.last_seam_cost = image_energy[-1, j]
+        # last row
         for i in range(height - 1, -1, -1):
             seam_mask[i, j] = False
             seam_idx.append(j)
@@ -190,81 +167,6 @@ class SeamCarvingImage:
 
         seam_idx.reverse()
         return np.array(seam_idx), seam_mask
-
-    # def resize(self, output_height, output_width):
-    #     width_to_remove = self.input_width - output_width
-    #     height_to_remove = self.input_height - output_height
-    #
-    #     input_image_local = np.array(self.input_image)  # make a copy
-    #     input_image_tmp = np.array(self.input_image)  # make a copy
-    #     pixel_index_local = np.indices((input_image_local.shape[0], input_image_local.shape[1])).transpose(1, 2, 0)
-    #
-    #     seam_id = 0
-    #     # process width
-    #     if width_to_remove < 0:
-    #         print('expand width')
-    #         width_to_expand = width_to_remove
-    #     elif width_to_remove > 0:
-    #         print('reduce width')
-    #         for i in range(width_to_remove):
-    #             energy_map = self.energy_func(input_image_local)
-    #             heatmap = self.make_heatmap(energy_map)
-    #
-    #             seam_index, seam_mask = self.find_min_energy_seam_vertical(energy_map, None, None)
-    #
-    #             output_image = np.array(input_image_local)
-    #             output_image[~seam_mask] = [0, 0, 1.]
-    #             heatmap[~seam_mask] = [0, 0, 255.]
-    #
-    #             seam_pixel_idx = pixel_index_local[~seam_mask]
-    #             idx_y = seam_pixel_idx[:, 0]
-    #             idx_x = seam_pixel_idx[:, 1]
-    #             self.seam_order[idx_y, idx_x] = seam_id
-    #             input_image_tmp[idx_y, idx_x] = [0, 0, 1.]
-    #
-    #             concat = np.concatenate([(output_image * 255).astype(np.uint8), heatmap], axis=0)
-    #             cv2.imshow("seam image + energy map", concat)
-    #             cv2.waitKey(1)
-    #
-    #             # concat_tmp = (input_image_tmp * 255).astype(np.uint8)
-    #             # cv2.imshow("seam image + energy map", concat_tmp)
-    #             # cv2.waitKey(1)
-    #
-    #
-    #             input_image_local = output_image[seam_mask].reshape(
-    #                 (output_image.shape[0], output_image.shape[1] - 1, 3))
-    #             pixel_index_local = pixel_index_local[seam_mask].reshape(
-    #                 (output_image.shape[0], output_image.shape[1] - 1, 2))
-    #             seam_id += 1
-    #
-    #
-    #     # process height
-    #     if height_to_remove < 0:
-    #         print('expand height')
-    #         height_to_expand = - height_to_remove
-    #     elif height_to_remove > 0:
-    #         print('reduce height')
-    #
-    #         for i in range(height_to_remove):
-    #             energy_map = self.energy_func(input_image_local)
-    #             heatmap = self.make_heatmap(energy_map)
-    #
-    #             seam_index, seam_mask = self.find_min_energy_seam_horizontal(energy_map, None, None)
-    #
-    #             output_image = np.array(input_image_local)
-    #             output_image[~seam_mask] = [0, 0, 1.]
-    #             heatmap[~seam_mask] = [0, 0, 255]
-    #             concat = np.concatenate([(output_image * 255).astype(np.uint8), heatmap], axis=1)
-    #             cv2.imshow("seam image + energy map", concat)
-    #             cv2.waitKey(1)
-    #
-    #             output_image = np.rot90(output_image, 1, axes=(0, 1))
-    #             seam_mask = np.rot90(seam_mask, 1, axes=(0, 1))
-    #             input_image_local = output_image[seam_mask].reshape(
-    #                 (output_image.shape[0], output_image.shape[1] - 1, 3))
-    #             input_image_local = np.rot90(input_image_local, -1, axes=(0, 1))
-    #
-    #     self.result_image = input_image_local
 
     def reduce_width(self, width_to_remove):
         print('reduce width')
@@ -480,12 +382,22 @@ class SeamCarvingImage:
 
         self.all_seams_expand_result = all_seams_stage
 
-    def expand_height(self, height_to_expand, min_seam_count):
-        print('expand height')
-
     def show(self):
         cv2.imshow("result image", self.result_image)
         cv2.waitKey(0)
+
+    def show_optimal_order_map(self, wait=False):
+        order_map_heat = self.make_heatmap(self.seam_order_cost)
+        cv2.imshow("optimal order map", order_map_heat)
+        if wait:
+            cv2.waitKey(0)
+        else:
+            cv2.waitKey(1)
+
+    def save_optimal_order_map(self, name):
+        order_map = self.seam_order_cost / self.seam_order_cost.max()
+        order_map_heat = self.make_heatmap(order_map)
+        cv2.imwrite(name, order_map_heat)
 
     def save_result(self, name):
         cv2.imwrite(name, (self.result_image * 255).astype(np.uint8))
@@ -500,9 +412,6 @@ class SeamCarvingImage:
         energy_map = self.energy_func(self.result_image)
         heatmap = self.make_heatmap(energy_map)
         cv2.imwrite(name, heatmap)
-
-    def preprocess(self):
-        print('Preprocess')
 
     def amplify(self, factor=1.2):
         print('amplify')
@@ -521,6 +430,27 @@ class SeamCarvingImage:
 
         self.reduce_width(remove_w)
         self.reduce_height(remove_h)
+
+    def optimal_resize(self, reduce_height, reduce_width):
+        self.result_image = self.images_cache[reduce_height][reduce_width]
+
+    def save_optimal_back_trace(self, name):
+        order_map = self.seam_order_cost / self.seam_order_cost.max()
+        order_map_heat = self.make_heatmap(order_map)
+
+        j = self.input_image.shape[0] - self.result_image.shape[0]
+        i = self.input_image.shape[1] - self.result_image.shape[1]
+        while j > 0 or i > 0:
+            order_map_heat[j, i] = [255, 255, 255]
+            if self.seam_order_back_trace[j, i] == -1:  # left
+                i -= 1
+            elif self.seam_order_back_trace[j, i] == 1:  # up
+                j -= 1
+            else:
+                print('error')
+                break
+
+        cv2.imwrite(name, order_map_heat)
 
     def find_faces(self):
         cascPath = "haarcascade_frontalface_default.xml"
@@ -553,6 +483,105 @@ class SeamCarvingImage:
             cv2.rectangle(im, (x, y), (x + w, y + h), (0, 0, 255), 2)
         cv2.imwrite(name, im)
 
+    def calculate_optimal_seam_order(self):
+        # dynamic programming
+        self.images_cache: List[List] = [[None for i in range(self.input_width)] for j in range(self.input_height)]
+        self.images_cache[0][0] = self.input_image
+
+        for j in range(self.input_height):
+            for i in range(self.input_width):
+                if j == 0:  # image top
+                    if i == 0:
+                        # left top
+                        self.seam_order_cost[j, i] = 0
+                    else:
+                        # cost[j, i] = cost[j, i-1] + seam_cost
+                        input_image_local = np.array(self.images_cache[j][i - 1])
+                        energy_map = self.energy_func(input_image_local)
+                        seam_index, seam_mask = self.find_min_energy_seam_vertical(energy_map, None,
+                                                                                   None)
+                        output_image = np.array(input_image_local)  # make a copy
+                        output_image[~seam_mask] = [0, 0, 1.]
+                        output_image = output_image[seam_mask].reshape(
+                            (output_image.shape[0], output_image.shape[1] - 1, 3))
+
+                        self.images_cache[j][i] = output_image  # store image result
+                        self.seam_order_cost[j][i] = self.seam_order_cost[j][i - 1] + self.last_seam_cost
+                        self.seam_order_back_trace[j][i] = -1  # left
+
+                else:
+                    if i == 0:
+                        # left most
+                        # cost[j, i] = cost[j-1, i] + seam_cost
+                        input_image_local = np.array(self.images_cache[j - 1][i])
+                        input_image_local = np.rot90(input_image_local, -1, axes=(0, 1))
+                        energy_map = self.energy_func(input_image_local)
+                        seam_index_rot, seam_mask_rot = self.find_min_energy_seam_vertical(energy_map, None,
+                                                                                           None)
+                        output_image = np.array(input_image_local)
+                        output_image[~seam_mask_rot] = [0, 0, 1.]
+                        output_image = output_image[seam_mask_rot].reshape(
+                            (output_image.shape[0], output_image.shape[1] - 1, 3))
+                        output_image = np.rot90(output_image, 1, axes=(0, 1))
+                        self.images_cache[j][i] = output_image  # store image result
+                        self.seam_order_cost[j][i] = self.seam_order_cost[j - 1][i] + self.last_seam_cost
+                        self.seam_order_back_trace[j][i] = 1  # up
+
+                    else:
+                        # cost[j, i] = min((cost[j-1, i] + seam_cost_up) , (cost[j, i-1] + seam_cost_left))
+                        # calculate left
+                        input_image_local = np.array(self.images_cache[j][i - 1])
+                        energy_map = self.energy_func(input_image_local)
+                        seam_index, seam_mask = self.find_min_energy_seam_vertical(energy_map, None,
+                                                                                   None)
+                        output_image = np.array(input_image_local)  # make a copy
+                        output_image[~seam_mask] = [0, 0, 1.]
+                        output_image = output_image[seam_mask].reshape(
+                            (output_image.shape[0], output_image.shape[1] - 1, 3))
+
+                        image_from_left = output_image  # store image result
+                        seam_cost_left = self.last_seam_cost + self.seam_order_cost[j, i - 1]
+
+                        # calculate up
+                        input_image_local = np.array(self.images_cache[j - 1][i])
+                        input_image_local = np.rot90(input_image_local, -1, axes=(0, 1))
+                        energy_map = self.energy_func(input_image_local)
+                        seam_index_rot, seam_mask_rot = self.find_min_energy_seam_vertical(energy_map, None,
+                                                                                           None)
+                        output_image = np.array(input_image_local)
+                        output_image[~seam_mask_rot] = [0, 0, 1.]
+                        output_image = output_image[seam_mask_rot].reshape(
+                            (output_image.shape[0], output_image.shape[1] - 1, 3))
+                        output_image = np.rot90(output_image, 1, axes=(0, 1))
+                        image_from_up = output_image  # store image result
+                        seam_cost_up = self.last_seam_cost + self.seam_order_cost[j - 1, i]
+
+                        if seam_cost_up < seam_cost_left:
+                            self.seam_order_cost[j, i] = seam_cost_up
+                            self.images_cache[j][i] = image_from_up
+                            self.seam_order_back_trace[j][i] = 1  # up
+
+                        else:
+                            self.seam_order_cost[j, i] = seam_cost_left
+                            self.images_cache[j][i] = image_from_left
+                            self.seam_order_back_trace[j][i] = -1  # left
+
+                self.show_optimal_order_map()
+
+
+def demo0():
+    """reduce width"""
+    input_file = 'data/bench.png'
+
+    input_image = cv2.imread(input_file).astype(np.float64)
+    input_image = input_image / 255.0
+    if input_image.shape[2] > 3:
+        input_image = input_image[:, :, :3]
+
+    sc_image = SeamCarvingImage(input_image, energy_function='forward')
+    sc_image.reduce_width(100)
+    sc_image.show()
+
 
 def demo1():
     """content amplification"""
@@ -569,6 +598,7 @@ def demo1():
     sc_image.show()
     sc_image.save_result('output/bench_amplification.png')
 
+
 def demo1_2():
     """content amplification"""
     input_file = 'data/balloons.jpg'
@@ -582,6 +612,7 @@ def demo1_2():
     sc_image.amplify(1.5)
     sc_image.show()
     sc_image.save_result('output/ballons_amplification.png')
+
 
 def demo2():
     """remove the woman"""
@@ -620,6 +651,7 @@ def demo3():
     sc_image.show()
     sc_image.save_result('output/remove_man.png')
 
+
 def demo4():
     """forward energy"""
     input_file = 'data/bench.png'
@@ -627,6 +659,9 @@ def demo4():
     input_image = input_image / 255.0
     if input_image.shape[2] > 3:
         input_image = input_image[:, :, :3]
+
+    # sc_image = SeamCarvingImage(np.rot90(input_image,1,axes=(0, 1)), energy_function='forward')
+    # sc_image.save_energy_map('output/bench_forward_rot.png')
 
     sc_image = SeamCarvingImage(input_image, energy_function='forward')
     sc_image.reduce_width(150)
@@ -640,61 +675,114 @@ def demo4():
     sc_image.save_result('output/e1_bench_result.png')
     sc_image.save_input_image_with_seam('output/e1_bench_result_seams.png')
 
+
+def demo5():
+    """optimal seam order"""
+    input_file = 'data/art3_very_small.png'
+    input_image = cv2.imread(input_file).astype(np.float64)
+    input_image = input_image / 255.0
+    if input_image.shape[2] > 3:
+        input_image = input_image[:, :, :3]
+
+    sc_image = SeamCarvingImage(input_image, energy_function='e1')
+    sc_image.calculate_optimal_seam_order()
+
+    sc_image.optimal_resize(40, 30)
+    sc_image.save_optimal_back_trace('output/optimal_order_backtrace_small.png')
+    sc_image.save_optimal_order_map('output/optimal_order_map_small.png')
+    sc_image.save_result('output/optimal_order_result_small.png')
+    sc_image.show_optimal_order_map(wait=True)
+    sc_image.show()
+
+
+def demo6():
+    """face detect"""
+    input_file = 'data/ma2.jpg'
+    input_image = cv2.imread(input_file).astype(np.float64)
+    input_image = input_image / 255.0
+    if input_image.shape[2] > 3:
+        input_image = input_image[:, :, :3]
+
+    sc_image = SeamCarvingImage(input_image, energy_function='forward')
+    sc_image.find_faces()
+    sc_image.make_protect_face_mask()
+    sc_image.show_faces()
+    sc_image.save_faces_image('output/ma2_faces_detected.png')
+    sc_image.reduce_width(200)
+    sc_image.show()
+    sc_image.save_result('output/ma2_result_face.png')
+    sc_image.save_input_image_with_seam('output/ma2_result_seam_face.png')
+
+
+def demo7():
+    """expand image - stage"""
+    input_file = 'data/art1.png'
+    input_image = cv2.imread(input_file).astype(np.float64)
+    input_image = input_image / 255.0
+    if input_image.shape[2] > 3:
+        input_image = input_image[:, :, :3]
+
+    sc_image = SeamCarvingImage(input_image, energy_function='forward')
+    sc_image.expand_width(100, 40)
+    sc_image.show()
+    sc_image.save_result('art1_result_40.png')
+    sc_image.save_result_with_expand_seams('art1_result_seams_40.png')
+
+
+def demo8_1():
+    """expand image - iterative"""
+    input_file = 'data/art3.png'
+    input_image = cv2.imread(input_file).astype(np.float64)
+    input_image = input_image / 255.0
+    if input_image.shape[2] > 3:
+        input_image = input_image[:, :, :3]
+
+    sc_image = SeamCarvingImage(input_image, energy_function='forward')
+    sc_image.expand_width(200, 1)
+    sc_image.show()
+    sc_image.save_result('output/art3_result_1.png')
+    sc_image.save_result_with_expand_seams('output/art3_result_seams_1.png')
+
+
+def demo8_2():
+    """expand image - all"""
+    input_file = 'data/art3.png'
+    input_image = cv2.imread(input_file).astype(np.float64)
+    input_image = input_image / 255.0
+    if input_image.shape[2] > 3:
+        input_image = input_image[:, :, :3]
+    sc_image = SeamCarvingImage(input_image, energy_function='e1')
+    sc_image.expand_width(200, 200)
+    sc_image.show()
+    sc_image.save_result('output/art3_result_200.png')
+    sc_image.save_result_with_expand_seams('output/art3_result_seams_200.png')
+
+
+def demo8_3():
+    """expand image - stage"""
+    input_file = 'data/art3.png'
+    input_image = cv2.imread(input_file).astype(np.float64)
+    input_image = input_image / 255.0
+    if input_image.shape[2] > 3:
+        input_image = input_image[:, :, :3]
+
+    sc_image = SeamCarvingImage(input_image, energy_function='forward')
+    sc_image.expand_width(200, 50)
+    sc_image.show()
+    sc_image.save_result('output/art3_result_50.png')
+    sc_image.save_result_with_expand_seams('output/art3_result_seams_50.png')
+
+
 if __name__ == '__main__':
+    demo0()
     # demo1()
     # demo1_2()
     # demo2()
     # demo3()
-    demo4()
-    # input_file = 'data/bench.png'
-    # input_file = 'data/art3.png'
-    # input_file = 'data/art2.jpg'
-    # input_file = 'data/art1.png'
-    # input_file = 'data/trump.jpg'
-    # input_file = 'data/trump_and_baby.jpg'
-    # input_file = 'data/king.jpg'
-    # input_file = 'data/ma2.jpg'
-    # input_file = 'data/balloons.jpg'
-    # input_file = 'data/plane.jpg'
-    # input_file = 'data/benz.jpg'
-    # input_image = cv2.imread(input_file).astype(np.float64)
-    # input_image = input_image / 255.0
-    # if input_image.shape[2] > 3:
-    #     input_image = input_image[:, :, :3]
-    #
-    # pro_mask =  cv2.imread('data/protect.mask.png').sum(axis=2).astype(np.bool)
-    # rm_mask =  cv2.imread('data/remove.mask.png').sum(axis=2).astype(np.bool)
-    #
-    # sc_image = SeamCarvingImage(input_image, energy_function='forward')
-    # sc_image.expand_width(100, 40)
-    # sc_image.show()
-    # sc_image.save_result('art1_result_40.png')
-    # sc_image.save_result_with_expand_seams('art1_result_seams_40.png')
-    # sc_image.find_faces()
-    # sc_image.make_protect_face_mask()
-    # sc_image.save_faces_image('ma2_faces_detected.png')
-    #
-    # sc_image.save_energy_map('ma2_energy_face.png')
-    # sc_image.reduce_width(200)
-    # sc_image.show()
-    # sc_image.save_result('ma2_result_face.png')
-    # sc_image.save_input_image_with_seam('ma2_result_seam_face.png')
-
-    # sc_image.find_faces()
-    # sc_image.show_faces()
-
-    # sc_image = SeamCarvingImage(input_image, energy_function='forward')
-    # sc_image.save_energy_map('output/bench_forward.png')
-    # sc_image = SeamCarvingImage(input_image, energy_function='e1')
-    # sc_image.save_energy_map('output/bench_e1.png')
-    # sc_image = SeamCarvingImage(input_image, energy_function='e2')
-    # sc_image.save_energy_map('output/bench_e2.png')
-    # sc_image = SeamCarvingImage(input_image, energy_function='entropy')
-    # sc_image.save_energy_map('output/bench_entropy.png')
-    # sc_image = SeamCarvingImage(np.rot90(input_image,1,axes=(0, 1)), energy_function='forward')
-    # sc_image.save_energy_map('output/bench_forward_rot.png')
-    # sc_image.reduce_height(10)
-    # sc_image.reduce_width(180)
-    # sc_image.reduce_height(10)
-
-
+    # demo4()
+    # demo5()
+    # demo6()
+    # demo7()
+    # demo8_1()
+    # demo8_2()
+    # demo8_3()
